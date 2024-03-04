@@ -206,4 +206,9 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config PHOENIX
+    bool
+    default y if TEST_DEVICES
+    depends on PCI && MSI_NONBROKEN && PC
+
 source macio/Kconfig
