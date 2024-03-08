@@ -142,7 +142,8 @@ static void m68000_cpu_initfn(Object *obj)
 }
 
 /*
- * Adds BKPT, MOVE-from-SR *now priv instr, and MOVEC, MOVES, RTD
+ * Adds BKPT, MOVE-from-SR *now priv instr, and MOVEC, MOVES, RTD,
+ *      format+vector in exception frame.
  */
 static void m68010_cpu_initfn(Object *obj)
 {
@@ -155,6 +156,7 @@ static void m68010_cpu_initfn(Object *obj)
     m68k_set_feature(env, M68K_FEATURE_BKPT);
     m68k_set_feature(env, M68K_FEATURE_MOVEC);
     m68k_set_feature(env, M68K_FEATURE_MOVEFROMSR_PRIV);
+    m68k_set_feature(env, M68K_FEATURE_EXCEPTION_FORMAT_VEC);
 }
 
 /*
@@ -568,7 +570,6 @@ static void m68k_cpu_class_init(ObjectClass *c, void *data)
 #endif
     cc->disas_set_info = m68k_cpu_disas_set_info;
 
-    cc->gdb_num_core_regs = 18;
     cc->tcg_ops = &m68k_tcg_ops;
 }
 

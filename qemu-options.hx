@@ -2468,7 +2468,7 @@ SRST
 
     ``to=L``
         With this option, QEMU will try next available VNC displays,
-        until the number L, if the origianlly defined "-vnc display" is
+        until the number L, if the originally defined "-vnc display" is
         not available, e.g. port 5900+display is already used by another
         application. By default, to=0.
 
@@ -2641,7 +2641,8 @@ SRST
 ``-win2k-hack``
     Use it when installing Windows 2000 to avoid a disk full bug. After
     Windows 2000 is installed, you no longer need this option (this
-    option slows down the IDE transfers).
+    option slows down the IDE transfers).  Synonym of ``-global
+    ide-device.win2k-install-hack=on``.
 ERST
 
 DEF("no-fd-bootchk", 0, QEMU_OPTION_no_fd_bootchk,
@@ -2650,7 +2651,7 @@ DEF("no-fd-bootchk", 0, QEMU_OPTION_no_fd_bootchk,
 SRST
 ``-no-fd-bootchk``
     Disable boot signature checking for floppy disks in BIOS. May be
-    needed to boot from old floppy disks.
+    needed to boot from old floppy disks.  Synonym of ``-m fd-bootchk=off``.
 ERST
 
 DEF("acpitable", HAS_ARG, QEMU_OPTION_acpitable,
@@ -4128,7 +4129,7 @@ SRST
     default device is ``vc`` in graphical mode and ``stdio`` in non
     graphical mode.
 
-    This option can be used several times to simulate up to 4 serial
+    This option can be used several times to simulate multiple serial
     ports.
 
     You can use ``-serial none`` to suppress the creation of default
@@ -5511,7 +5512,7 @@ SRST
             -object filter-redirector,netdev=hn0,id=redire0,queue=rx,indev=compare_out
             -object filter-redirector,netdev=hn0,id=redire1,queue=rx,outdev=compare0
             -object iothread,id=iothread1
-            -object colo-compare,id=comp0,primary_in=compare0-0,secondary_in=compare1,outdev=compare_out0,notify_dev=nofity_way,iothread=iothread1
+            -object colo-compare,id=comp0,primary_in=compare0-0,secondary_in=compare1,outdev=compare_out0,notify_dev=notify_way,iothread=iothread1
 
             secondary:
             -netdev tap,id=hn0,vhost=off

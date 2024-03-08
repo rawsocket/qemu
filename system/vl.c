@@ -891,7 +891,7 @@ static void help(int exitcode)
     printf("\nDuring emulation, the following keys are useful:\n"
            "ctrl-alt-f      toggle full screen\n"
            "ctrl-alt-n      switch to virtual console 'n'\n"
-           "ctrl-alt        toggle mouse and keyboard grab\n"
+           "ctrl-alt-g      toggle mouse and keyboard grab\n"
            "\n"
            "When using -nographic, press 'ctrl-a h' to get some help.\n"
            "\n"
@@ -2118,7 +2118,6 @@ static void qemu_create_machine(QDict *qdict)
     }
 
     cpu_exec_init_all();
-    page_size_init();
 
     if (machine_class->hw_version) {
         qemu_set_hw_version(machine_class->hw_version);
@@ -2927,7 +2926,7 @@ void qemu_init(int argc, char **argv)
                           optarg, FD_OPTS);
                 break;
             case QEMU_OPTION_no_fd_bootchk:
-                fd_bootchk = 0;
+                qdict_put_str(machine_opts_dict, "fd-bootchk", "off");
                 break;
             case QEMU_OPTION_netdev:
                 default_net = 0;
@@ -3265,7 +3264,7 @@ void qemu_init(int argc, char **argv)
                 pid_file = optarg;
                 break;
             case QEMU_OPTION_win2k_hack:
-                win2k_install_hack = 1;
+                object_register_sugar_prop("ide-device", "win2k-install-hack", "true", true);
                 break;
             case QEMU_OPTION_acpitable:
                 opts = qemu_opts_parse_noisily(qemu_find_opts("acpi"),

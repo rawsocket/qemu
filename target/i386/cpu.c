@@ -857,7 +857,7 @@ FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
         .feat_names = {
             "kvmclock", "kvm-nopiodelay", "kvm-mmu", "kvmclock",
             "kvm-asyncpf", "kvm-steal-time", "kvm-pv-eoi", "kvm-pv-unhalt",
-            NULL, "kvm-pv-tlb-flush", NULL, "kvm-pv-ipi",
+            NULL, "kvm-pv-tlb-flush", "kvm-asyncpf-vmexit", "kvm-pv-ipi",
             "kvm-poll-control", "kvm-pv-sched-yield", "kvm-asyncpf-int", "kvm-msi-ext-dest-id",
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
@@ -6412,6 +6412,10 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
             break;
         }
 
+        /*
+         * If these are changed, they should stay in sync with
+         * x86_cpu_filter_features().
+         */
         if (count == 0) {
             *eax = INTEL_PT_MAX_SUBLEAF;
             *ebx = INTEL_PT_MINIMAL_EBX;
@@ -6927,6 +6931,8 @@ static void x86_cpu_enable_xsave_components(X86CPU *cpu)
     if (!(env->features[FEAT_1_ECX] & CPUID_EXT_XSAVE)) {
         env->features[FEAT_XSAVE_XCR0_LO] = 0;
         env->features[FEAT_XSAVE_XCR0_HI] = 0;
+        env->features[FEAT_XSAVE_XSS_LO] = 0;
+        env->features[FEAT_XSAVE_XSS_HI] = 0;
         return;
     }
 
@@ -6945,9 +6951,9 @@ static void x86_cpu_enable_xsave_components(X86CPU *cpu)
     }
 
     env->features[FEAT_XSAVE_XCR0_LO] = mask & CPUID_XSTATE_XCR0_MASK;
-    env->features[FEAT_XSAVE_XCR0_HI] = mask >> 32;
+    env->features[FEAT_XSAVE_XCR0_HI] = (mask & CPUID_XSTATE_XCR0_MASK) >> 32;
     env->features[FEAT_XSAVE_XSS_LO] = mask & CPUID_XSTATE_XSS_MASK;
-    env->features[FEAT_XSAVE_XSS_HI] = mask >> 32;
+    env->features[FEAT_XSAVE_XSS_HI] = (mask & CPUID_XSTATE_XSS_MASK) >> 32;
 }
 
 /***** Steps involved on loading and filtering CPUID data
@@ -7154,7 +7160,12 @@ static void x86_cpu_filter_features(X86CPU *cpu, bool verbose)
         mark_unavailable_features(cpu, w, unavailable_features, prefix);
     }
 
-    if (env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_INTEL_PT) {
+    /*
+     * Check that KVM actually allows the processor tracing features that
+     * are advertised by cpu_x86_cpuid().  Keep these two in sync.
+     */
+    if ((env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_INTEL_PT) &&
+        kvm_enabled()) {
         uint32_t eax_0, ebx_0, ecx_0, edx_0_unused;
         uint32_t eax_1, ebx_1, ecx_1_unused, edx_1_unused;
 
@@ -7724,10 +7735,13 @@ static bool x86_cpu_has_work(CPUState *cs)
 static int x86_cpu_mmu_index(CPUState *cs, bool ifetch)
 {
     CPUX86State *env = cpu_env(cs);
+    int mmu_index_32 = (env->hflags & HF_CS64_MASK) ? 1 : 0;
+    int mmu_index_base =
+        (env->hflags & HF_CPL_MASK) == 3 ? MMU_USER64_IDX :
+        !(env->hflags & HF_SMAP_MASK) ? MMU_KNOSMAP64_IDX :
+        (env->eflags & AC_MASK) ? MMU_KNOSMAP64_IDX : MMU_KSMAP64_IDX;
 
-    return (env->hflags & HF_CPL_MASK) == 3 ? MMU_USER_IDX :
-        (!(env->hflags & HF_SMAP_MASK) || (env->eflags & AC_MASK))
-        ? MMU_KNOSMAP_IDX : MMU_KSMAP_IDX;
+    return mmu_index_base + mmu_index_32;
 }
 
 static void x86_disas_set_info(CPUState *cs, disassemble_info *info)
@@ -7979,10 +7993,8 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
     cc->gdb_arch_name = x86_gdb_arch_name;
 #ifdef TARGET_X86_64
     cc->gdb_core_xml_file = "i386-64bit.xml";
-    cc->gdb_num_core_regs = 66;
 #else
     cc->gdb_core_xml_file = "i386-32bit.xml";
-    cc->gdb_num_core_regs = 50;
 #endif
     cc->disas_set_info = x86_disas_set_info;
 
