@@ -53,6 +53,9 @@
 
 #include "migration/vmstate.h"
 
+#include "hw/misc/phoenix.h"
+#include "hw/misc/queue.h"
+
 struct BarConfig {
   struct MemoryRegion bar;
   uint32_t size;
@@ -63,22 +66,19 @@ typedef struct PhoenixState {
   PCIDevice parent_obj;
   NICConf conf;
   NICState *nic;
-  uint16_t subsys_ven;
-  uint16_t subsys;
 
+  uint16_t subsys;
+  uint16_t subsys_ven;
   uint16_t subsys_ven_used;
   uint16_t subsys_used;
   uint16_t pci_id;
   uint16_t pci_dev_fn;
 
+  uint16_t msix_index;
+  uint16_t msix_num_vectors;
+
   struct BarConfig bar[6];
   uint8_t mac[6];
-  uint16_t msix_num_vectors;
-  uint8_t msix_pba_bar_nr;
-  uint16_t msix_pba_offset;
-  uint8_t msix_index;
-  uint16_t msix_cap_pos;
-  uint8_t ari_increment;
   uint8_t link;
 } PhoenixState;
 
@@ -97,24 +97,32 @@ static void phoenix_unuse_msix_vectors(PhoenixState *s) {
 
 static void phoenix_use_msix_vectors(PhoenixState *s) {
   for (int i = 0; i < s->msix_num_vectors; ++i) {
+    fprintf(stderr, "Phoenix: Using MSI-X vector %d/%d out of %d\n", i, s->msix_num_vectors, PCI_DEVICE(s)->msix_entries_nr);
     msix_vector_use(PCI_DEVICE(s), i);
   }
 }
 
-static void phoenix_init_msix(PhoenixState *s) {
+static void phoenix_init_msix(PhoenixState *s, struct phoenix_config_db *config) {
   PCIDevice *d = PCI_DEVICE(s);
   struct Error *err = 0;
+  s->msix_index = config->msix_index;
+  s->msix_num_vectors = config->msix_num_vectors;
+
+  fprintf(stderr,
+          "s->msix_num_vectors = %d, s->msix_index = %d, config->msix_pba_bar_nr = %d, config->msix_pba_offset = %d, config->msix_cap_pos = %d\n",
+          s->msix_num_vectors, s->msix_index, config->msix_pba_bar_nr, config->msix_pba_offset, config->msix_cap_pos);
+
   int res =
-      msix_init(PCI_DEVICE(s), s->msix_num_vectors, &s->bar[s->msix_index].bar,
-                s->msix_index, 0, &s->bar[s->msix_index].bar,
-                s->msix_pba_bar_nr, s->msix_pba_offset, s->msix_cap_pos, &err);
+      msix_init(d, s->msix_num_vectors, &s->bar[s->msix_index].bar,
+                s->msix_index, /* MSIX TABLE */0, &s->bar[s->msix_index].bar,
+                config->msix_pba_bar_nr, config->msix_pba_offset, config->msix_cap_pos, &err);
 
   if (res >= 0) {
-    msix_uninit(d, &s->bar[s->msix_index].bar, &s->bar[s->msix_index].bar);
+    phoenix_use_msix_vectors(s);
     return;
   }
 
-  phoenix_use_msix_vectors(s);
+  fprintf(stderr, "Phoenix: Failed to use MSI-X vectors\n");
 }
 
 static void phoenix_cleanup_msix(PhoenixState *s) {
@@ -284,15 +292,87 @@ static void phoenix_format_nic_info_str(NetClientState *nc, const char *type,
            macaddr[5]);
 }
 
+struct QueueAttrs config_attrs = {
+  .qid = "conf",
+  .desc_size = sizeof(struct phoenix_config_db),
+  .num_descs = 8,
+  .last_cons = 0,
+  .last_prod = 0,
+  .is_a_producer = false,
+};
+
+struct QueueAttrs config_cmpl_attrs = {
+  .qid = "conf.cmpl",
+  .desc_size = sizeof(struct phoenix_completion),
+  .num_descs = 8,
+  .last_cons = 0,
+  .last_prod = 0,
+  .is_a_producer = true,
+};
+
+static int phoenix_connect_model_backend(struct PhoenixState *s) {
+  int rc = connect_queue(&config_attrs, 10);
+  if (rc) {
+    fprintf(stderr, "ERROR: Failed to connect to the config queue.\n");
+    return -1;
+  }
+  rc = connect_queue(&config_cmpl_attrs, 10);
+  if (rc) {
+    fprintf(stderr, "ERROR: Failed to connect to the config completion queue.\n");
+  }
+
+  return 0;
+}
+
+static int phoenix_disconnect_model_backend(struct PhoenixState *s) {
+  destroy_queue(&config_attrs);
+  destroy_queue(&config_cmpl_attrs);
+
+  return 0;
+}
+
+static int phoenix_read_config(struct PhoenixState *s, struct phoenix_config_db *pcie_config) {
+  int rc;
+
+  fprintf(stderr, "Reading the config from the model backend.\n");
+  rc = dequeue(&config_attrs, (uint8_t *)pcie_config);
+
+  while (rc == -EAGAIN) {
+    fprintf(stderr, "Waiting for the config from the model backend.\n");
+    sleep(1);
+    rc = dequeue(&config_attrs, (uint8_t *)pcie_config);
+  }
+
+  if (rc != 0) {
+    fprintf(stderr, "ERROR: Failed to read the config from the model backend.\n");
+    return -1;
+  }
+
+  fprintf(stderr, "Read the config from the model backend.\n");
+
+  return 0;
+}
+
 static void phoenix_pci_realize(PCIDevice *pci_dev, Error **errp) {
-  static const uint16_t phoenix_pmrb_offset = 0x040;
-  static const uint16_t phoenix_pcie_offset = 0x0a0;
-  static const uint16_t phoenix_aer_offset = 0x100;
-  static const uint16_t phoenix_dsn_offset = 0x140;
-  static const uint16_t phoenix_ari_offset = 0x1c0;
+
   PhoenixState *s = PHOENIX(pci_dev);
 
   fprintf(stderr, "Initializing the instance with devfn %d\n", pci_dev->devfn);
+
+  if (phoenix_connect_model_backend(s) != 0) {
+    hw_error("ERROR: Failed to connect to the model backend.\n");
+  }
+
+  struct phoenix_config_db pcie_config = {0};
+
+  if (phoenix_read_config(s, &pcie_config) != 0) {
+    hw_error("ERROR: Failed to read the config from the model backend.\n");
+  }
+
+  if (!s->subsys_ven)
+    s->subsys_ven = pcie_config.subsys_vendor_id;
+  if (!s->subsys)
+    s->subsys = pcie_config.subsys_id;
 
   if (s->subsys_ven == 0 || s->subsys == 0)
     hw_error("ERROR: subsys_ven and subsys must be set.\n");
@@ -313,10 +393,17 @@ static void phoenix_pci_realize(PCIDevice *pci_dev, Error **errp) {
   s->subsys_ven_used = s->subsys_ven;
   s->subsys_used = s->subsys;
 
+  s->bar[0].size = pcie_config.bar0_size;
+  s->bar[0].prefetch = pcie_config.bar0_prefetchable;
+  s->bar[2].size = pcie_config.bar2_size;
+  s->bar[2].prefetch = pcie_config.bar2_prefetchable;
+  s->bar[4].size = pcie_config.bar4_size;
+  s->bar[4].prefetch = pcie_config.bar4_prefetchable;
+
   for (int bar_index = 0; bar_index < 6; bar_index += 2) {
     char bar_name[16] = {0};
     snprintf(bar_name, sizeof(bar_name) - 1, "pcie-bar%d-msix", bar_index);
-    if (s->msix_index == bar_index) {
+    if (pcie_config.msix_index == bar_index) {
       memory_region_init(&s->bar[bar_index].bar, OBJECT(s),
                          bar_name, s->bar[bar_index].size);
     } else {
@@ -338,32 +425,36 @@ static void phoenix_pci_realize(PCIDevice *pci_dev, Error **errp) {
   qemu_macaddr_default_if_unset(&s->conf.macaddr);
   memcpy(s->mac, s->conf.macaddr.a, sizeof(s->mac));
 
-  if (pcie_endpoint_cap_init(pci_dev, phoenix_pcie_offset) < 0)
+  if (pcie_endpoint_cap_init(pci_dev, pcie_config.pcie_offset) < 0)
     hw_error("Failed to initialize PCIe capability");
 
-  phoenix_init_msix(s);
+  phoenix_init_msix(s, &pcie_config);
 
-  if (phoenix_add_pm_capability(pci_dev, phoenix_pmrb_offset, PCI_PM_CAP_DSI) <
+  if (phoenix_add_pm_capability(pci_dev, pcie_config.pmrb_offset, PCI_PM_CAP_DSI) <
       0)
     hw_error("Failed to initialize PM capability");
 
   pcie_cap_deverr_init(pci_dev);
-  if (pcie_aer_init(pci_dev, PCI_ERR_VER, phoenix_aer_offset, PCI_ERR_SIZEOF,
+  if (pcie_aer_init(pci_dev, PCI_ERR_VER, pcie_config.aer_offset, PCI_ERR_SIZEOF,
                     NULL) < 0)
     hw_error("Failed to initialize AER capability");
 
-  phoenix_pcie_ari_init(pci_dev, phoenix_ari_offset,
-                        pci_dev->devfn + s->ari_increment);
+  phoenix_pcie_ari_init(pci_dev, pcie_config.ari_offset,
+                        pci_dev->devfn + pcie_config.ari_increment);
 
-  pcie_dev_ser_num_init(pci_dev, phoenix_dsn_offset, phoenix_gen_dsn(s->mac));
+  pcie_dev_ser_num_init(pci_dev, pcie_config.dsn_offset, phoenix_gen_dsn(s->mac));
 
   s->nic = qemu_new_nic(&net_phoenix_mac_info, &s->conf, object_get_typename(OBJECT(s)), object_get_typename(OBJECT(s)), NULL, s);
 
   phoenix_format_nic_info_str(qemu_get_queue(s->nic), "mac", s->mac);
+
+  fprintf(stderr, "Phoenix device is materialized\n");
 }
 
 static void phoenix_pci_uninit(PCIDevice *pci_dev) {
   PhoenixState *s = PHOENIX(pci_dev);
+
+  phoenix_disconnect_model_backend(s);
 
   pcie_aer_exit(pci_dev);
   pcie_cap_exit(pci_dev);
@@ -406,18 +497,6 @@ static Property phoenix_properties[] = {
                        phoenix_prop_subsys_ven, uint16_t),
     DEFINE_PROP_SIGNED("subsys", PhoenixState, subsys, 0, phoenix_prop_subsys,
                        uint16_t),
-    DEFINE_PROP_SIZE32("bar0_size", PhoenixState, bar[0].size, 0),
-    DEFINE_PROP_SIZE32("bar2_size", PhoenixState, bar[1].size, 0),
-    DEFINE_PROP_SIZE32("bar4_size", PhoenixState, bar[2].size, 0),
-    DEFINE_PROP_BOOL("bar0_prefetch", PhoenixState, bar[0].prefetch, false),
-    DEFINE_PROP_BOOL("bar2_prefetch", PhoenixState, bar[2].prefetch, false),
-    DEFINE_PROP_BOOL("bar4_prefetch", PhoenixState, bar[4].prefetch, false),
-    DEFINE_PROP_UINT8("msix_index", PhoenixState, msix_index, 0),
-    DEFINE_PROP_UINT16("msix_num_vectors", PhoenixState, msix_num_vectors, 0),
-    DEFINE_PROP_UINT8("msix_pba_bar_nr", PhoenixState, msix_pba_bar_nr, 0),
-    DEFINE_PROP_UINT16("msix_pba_offset", PhoenixState, msix_pba_offset, 0),
-    DEFINE_PROP_UINT16("msix_cap_pos", PhoenixState, msix_cap_pos, 0),
-    DEFINE_PROP_UINT8("ari_increment", PhoenixState, ari_increment, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 
