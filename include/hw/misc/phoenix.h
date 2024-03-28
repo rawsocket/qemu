@@ -1,29 +1,24 @@
 #ifndef HW_MISC_PHOENIX_H
 #define HW_MISC_PHOENIX_H
 
-#define PHOENIX_PROTO_PROXY_OP_PCIE_CONFIG   0UL
-#define PHOENIX_PROTO_PROXY_OP_WRITE_REQ     1UL
-#define PHOENIX_PROTO_PROXY_OP_READ_REQ      2UL
-#define PHOENIX_PROTO_PROXY_OP_READ_RESP     3UL
-#define PHOENIX_PROTO_PROXY_OP_DMA_READ_REQ  4UL
-#define PHOENIX_PROTO_PROXY_OP_DMA_READ_RESP 5UL
-#define PHOENIX_PROTO_PROXY_OP_DMA_WRITE_REQ 6UL
-#define PHOENIX_PROTO_PROXY_OP_MSIX_REQ      7UL
-#define PHOENIX_PROTO_PROXY_OP_NETPACKET     8UL
-
-struct phoenix_header {
+struct PhoenixHeader {
     uint64_t sequence;
 };
 
-struct phoenix_completion {
-    struct phoenix_header header;
+struct PhoenixCompletion {
+    struct PhoenixHeader header;
     uint64_t status;
-#define PHOENIX_CMPL_STATUS_OK      (0)
-#define PHOENIX_CMPL_STATUS_FAIL    (1)
-};
+#define PHOENIX_CMPL_STATUS_OK                  (0)
+#define PHOENIX_CMPL_STATUS_INVALID_PARAMETERS  (1)
+#define PHOENIX_CMPL_STATUS_DUPLICATE_REQUEST   (2)
+} __attribute__((packed));
 
-struct phoenix_config_db {
-    struct phoenix_header header;
+struct PhoenixConfigRequest {
+    struct PhoenixHeader header;
+} __attribute__((packed));
+
+struct PhoenixConfigResponse {
+    struct PhoenixCompletion completion;
 
     uint32_t bar0_size;
     uint32_t bar2_size;
@@ -48,51 +43,59 @@ struct phoenix_config_db {
     uint8_t bar0_prefetchable;
     uint8_t bar2_prefetchable;
     uint8_t bar4_prefetchable;
+
 } __attribute__((packed));
 
-struct phoenix_reg_write_db {
-    struct phoenix_header header;
+struct PhoenixRegWriteRequest {
+    struct PhoenixHeader header;
 
     uint64_t bar_index:3;
     uint64_t reg_index:29;
     uint64_t reg_size_bytes:8;
     uint64_t reserved_0:24;
     uint64_t value;
-};
+} __attribute__((packed));
 
-struct phoenix_reg_read_db {
-    struct phoenix_header header;
+struct PhoenixRegReadRequest {
+    struct PhoenixHeader header;
 
     uint64_t bar_index:3;
     uint64_t reg_index:29;
     uint64_t reg_size_bytes:8;
     uint64_t reserved_0:24;
-};
+} __attribute__((packed));
 
-struct phoenix_reg_read_db_response {
-    struct phoenix_completion completion;
+struct PhoenixRegReadResponse {
+    struct PhoenixCompletion completion;
 
     uint64_t value;
-};
+} __attribute__((packed));
 
-struct phoenix_raise_msix_db {
-    struct phoenix_header header;
+struct PhoenixRaiseMSIXRequest {
+    struct PhoenixHeader header;
 
     uint64_t vector_index:16;
-};
+} __attribute__((packed));
 
-struct phoenix_dma_db {
-    struct phoenix_header header;
+struct PhoenixDmaRequest {
+    struct PhoenixHeader header;
 
     uint64_t dma_handle;
-    uint64_t dma_from_device:1;
-    uint64_t dma_data_length:63;
-};
+    uint64_t dma_data_length;
+    uint8_t dma_from_device;
+} __attribute__((packed));
 
-struct phoenix_netpacket_db {
-    struct phoenix_header header;
+
+struct PhoenixNetPacketNotification {
+    struct PhoenixHeader header;
 
     uint64_t netpacket_length;
-};
+} __attribute__((packed));
+
+struct PhoenixBlockata {
+#define PHOENIX_BLOCK_TRANSFER_SIZE 4096
+    uint8_t bytes[PHOENIX_BLOCK_TRANSFER_SIZE];
+} __attribute__((packed));
+
 
 #endif /* HW_MISC_PHOENIX_H */

@@ -102,7 +102,7 @@ static void phoenix_use_msix_vectors(PhoenixState *s) {
   }
 }
 
-static void phoenix_init_msix(PhoenixState *s, struct phoenix_config_db *config) {
+static void phoenix_init_msix(PhoenixState *s, struct PhoenixConfigResponse *config) {
   PCIDevice *d = PCI_DEVICE(s);
   struct Error *err = 0;
   s->msix_index = config->msix_index;
@@ -294,20 +294,20 @@ static void phoenix_format_nic_info_str(NetClientState *nc, const char *type,
 
 struct QueueAttrs config_attrs = {
   .qid = "conf",
-  .desc_size = sizeof(struct phoenix_config_db),
-  .num_descs = 8,
-  .last_cons = 0,
-  .last_prod = 0,
-  .is_a_producer = false,
-};
-
-struct QueueAttrs config_cmpl_attrs = {
-  .qid = "conf.cmpl",
-  .desc_size = sizeof(struct phoenix_completion),
+  .desc_size = sizeof(struct PhoenixConfigRequest),
   .num_descs = 8,
   .last_cons = 0,
   .last_prod = 0,
   .is_a_producer = true,
+};
+
+struct QueueAttrs config_cmpl_attrs = {
+  .qid = "conf_cmpl",
+  .desc_size = sizeof(struct PhoenixConfigResponse),
+  .num_descs = 8,
+  .last_cons = 0,
+  .last_prod = 0,
+  .is_a_producer = false,
 };
 
 static int phoenix_connect_model_backend(struct PhoenixState *s) {
@@ -331,20 +331,39 @@ static int phoenix_disconnect_model_backend(struct PhoenixState *s) {
   return 0;
 }
 
-static int phoenix_read_config(struct PhoenixState *s, struct phoenix_config_db *pcie_config) {
+static int phoenix_request_config(
+  struct PhoenixState *s, struct PhoenixConfigResponse *response) {
   int rc;
+  static uint64_t next_sequence = 1;
+  struct PhoenixConfigRequest request = {
+    .header = {
+      .sequence = next_sequence++,
+    },
+  };
+
+  rc = enqueue(&config_attrs, (uint8_t *)&request);
+  if (rc != 0) {
+    fprintf(stderr, "ERROR: Failed to write the config request to the model backend.\n");
+    return -1;
+  }
 
   fprintf(stderr, "Reading the config from the model backend.\n");
-  rc = dequeue(&config_attrs, (uint8_t *)pcie_config);
+  rc = dequeue(&config_cmpl_attrs, (uint8_t *)response);
 
   while (rc == -EAGAIN) {
     fprintf(stderr, "Waiting for the config from the model backend.\n");
     sleep(1);
-    rc = dequeue(&config_attrs, (uint8_t *)pcie_config);
+    rc = dequeue(&config_cmpl_attrs, (uint8_t *)response);
   }
 
   if (rc != 0) {
     fprintf(stderr, "ERROR: Failed to read the config from the model backend.\n");
+    return -1;
+  }
+
+  if (response->completion.header.sequence != request.header.sequence) {
+    fprintf(stderr, "ERROR: Sequence mismatch, expected:%ld, got:%ld\n",
+      request.header.sequence, response->completion.header.sequence);
     return -1;
   }
 
@@ -360,13 +379,15 @@ static void phoenix_pci_realize(PCIDevice *pci_dev, Error **errp) {
   fprintf(stderr, "Initializing the instance with devfn %d\n", pci_dev->devfn);
 
   if (phoenix_connect_model_backend(s) != 0) {
-    hw_error("ERROR: Failed to connect to the model backend.\n");
+    fprintf(stderr, "ERROR: Failed to connect to the model backend.\n");
+    exit(1);
   }
 
-  struct phoenix_config_db pcie_config = {0};
+  struct PhoenixConfigResponse pcie_config = {0};
 
-  if (phoenix_read_config(s, &pcie_config) != 0) {
-    hw_error("ERROR: Failed to read the config from the model backend.\n");
+  if (phoenix_request_config(s, &pcie_config) != 0) {
+    fprintf(stderr, "ERROR: Failed to read the config from the model backend.\n");
+    exit(1);
   }
 
   if (!s->subsys_ven)
@@ -374,8 +395,10 @@ static void phoenix_pci_realize(PCIDevice *pci_dev, Error **errp) {
   if (!s->subsys)
     s->subsys = pcie_config.subsys_id;
 
-  if (s->subsys_ven == 0 || s->subsys == 0)
-    hw_error("ERROR: subsys_ven and subsys must be set.\n");
+  if (s->subsys_ven == 0 || s->subsys == 0) {
+    fprintf(stderr, "ERROR: subsys_ven and subsys must be set.\n");
+    exit(1);
+  }
 
   pci_set_word(pci_dev->config + PCI_VENDOR_ID, s->subsys_ven);
   pci_set_word(pci_dev->config + PCI_DEVICE_ID, s->subsys);
