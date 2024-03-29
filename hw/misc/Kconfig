@@ -213,7 +213,7 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
-config PHOENIX
+config HUMMINGBIRD
     bool
     default y if TEST_DEVICES
     depends on PCI && MSI_NONBROKEN && PC
