@@ -80,7 +80,7 @@ typedef struct HummingbirdState {
   struct BarConfig bar[6];
   uint8_t mac[6];
   uint8_t link;
-  char qid_prefix[16];
+  char *qid_prefix;
 } HummingbirdState;
 
 #define TYPE_HUMMINGBIRD "hummingbird"
@@ -518,7 +518,7 @@ static PropertyInfo hummingbird_prop_subsys_ven, hummingbird_prop_subsys;
 
 static Property hummingbird_properties[] = {
     DEFINE_NIC_PROPERTIES(HummingbirdState, conf),
-    DEFINE_PROP_STRING("qid_prefix", HummingbirdState, qid_prefix, ""),
+    DEFINE_PROP_STRING("qid_prefix", HummingbirdState, qid_prefix),
     DEFINE_PROP_SIGNED("subsys_ven", HummingbirdState, subsys_ven, 0,
                        hummingbird_prop_subsys_ven, uint16_t),
     DEFINE_PROP_SIGNED("subsys", HummingbirdState, subsys, 0, hummingbird_prop_subsys,
