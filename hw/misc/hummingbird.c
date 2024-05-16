@@ -95,6 +95,7 @@ static void sleep_nanoseconds(uint64_t nano_secs) {
 
   while (nanosleep(&t_req, &t_rem) != 0) {
     if (errno != EINTR) {
+      perror("nanosleep");
       break;
     }
     t_req = t_rem;
@@ -113,9 +114,9 @@ static void hb_unuse_msix_vectors(struct HummingbirdState *s) {
 
 static void hb_use_msix_vectors(HummingbirdState *s) {
   for (int i = 0; i < s->msix_num_vectors; ++i) {
-    HB_INFO(s, "Using MSI-X vector %d/%d out of %d\n", i, s->msix_num_vectors, PCI_DEVICE(s)->msix_entries_nr);
     msix_vector_use(PCI_DEVICE(s), i);
   }
+  HB_INFO(s, "Set up to use %d MSIX vectors\n", s->msix_num_vectors);
 }
 
 static void hb_init_msix(struct HummingbirdState *s, struct HummingbirdConfigResponse *config) {
@@ -125,18 +126,23 @@ static void hb_init_msix(struct HummingbirdState *s, struct HummingbirdConfigRes
   s->msix_num_vectors = config->msix_num_vectors;
 
   HB_INFO(s,
-          "s->msix_num_vectors = %d, s->msix_index = %d, config->msix_pba_bar_nr = %d, config->msix_pba_offset = %d, config->msix_cap_pos = %d\n",
+          "s->msix_num_vectors = %d, s->msix_index = %d, config->msix_pba_bar_nr = %d, config->msix_pba_offset = %d, config->jejfgcefkc_pos = %d\n",
           s->msix_num_vectors, s->msix_index, config->msix_pba_bar_nr, config->msix_pba_offset, config->msix_cap_pos);
 
   int res =
-      msix_init(d, s->msix_num_vectors, &s->bar[s->msix_index].bar,
-                s->msix_index, /* MSIX TABLE */0, &s->bar[s->msix_index].bar,
-                config->msix_pba_bar_nr, config->msix_pba_offset, config->msix_cap_pos, &err);
+      msix_init(d, s->msix_num_vectors,
+                &s->bar[s->msix_index].bar,
+                s->msix_index, /* MSIX TABLE */0,
+                &s->bar[s->msix_index].bar,
+                config->msix_pba_bar_nr, config->msix_pba_offset,
+                config->msix_cap_pos, &err);
 
   if (res >= 0) {
     hb_use_msix_vectors(s);
     return;
   }
+
+  error_report_err(err);
 
   HB_ERR(s, "Failed to use MSI-X vectors\n");
 }
@@ -194,8 +200,8 @@ static inline uint64_t hb_read(void *opaque, int bar_index, hwaddr addr,
     .reg_size_bytes = size,
   };
 
-  static const int READ_PAUSE_NS = 1000;
-  static const int READ_RETRY_NUM = 100;
+  static const uint64_t READ_PAUSE_NS = 1000;
+  static const uint64_t READ_RETRY_NUM = 10000;
 
   HB_INFO(s, "Read from BAR%d, addr 0x%lx\n", bar_index, addr);
   int rc = enqueue(&reg_rw_req_attrs, &req);
@@ -209,31 +215,25 @@ static inline uint64_t hb_read(void *opaque, int bar_index, hwaddr addr,
   rc = dequeue(&reg_rw_resp_attrs, (uint8_t *)&resp);
   int retries = READ_RETRY_NUM;
   while (rc == -EAGAIN && retries > 0) {
-    HB_INFO(s, "Waiting for the reg read response from the model backend.\n");
+    //HB_INFO(s, "Waiting for the reg read response from the model backend.\n");
     sleep_nanoseconds(READ_PAUSE_NS);
-    rc = dequeue(&config_resp_attrs, (uint8_t *)&resp);
+    rc = dequeue(&reg_rw_resp_attrs, (uint8_t *)&resp);
     retries--;
   }
 
-  if (rc) {
-    HB_ERR(s, "Failed to dequeue reg read response\n");
-    return rc;
-  }
+  HB_CHECK(!rc, "Failed to dequeue reg read response\n");
+  HB_CHECK(retries, "Timed out waiting for the reg read response from the model backend.\n");
 
-  if (!retries) {
-    HB_ERR(s, "Timed out waiting for the reg response from the model backend.\n");
-    return -1;
-  }
+  HB_INFO(s, "Read response retries:%d\n", retries);
+  HB_CHECK(resp.completion.header.seq == req.header.seq,
+    "Read response seq %ld does not match request seq %ld\n", resp.completion.header.seq, req.header.seq)
 
   if (resp.completion.status != HB_CMPL_STATUS_OK) {
     HB_ERR(s, "Failed to read from BAR%d, addr 0x%lx\n", bar_index, addr);
     return -1;
   }
 
-  if (resp.completion.header.seq != req.header.seq) {
-    HB_ERR(s, "Read response seq %ld does not match request seq %ld\n", resp.completion.header.seq, req.header.seq);
-    return -1;
-  }
+  HB_INFO(s, "Read from BAR%d, addr 0x%lx, val 0x%lx\n", bar_index, addr, resp.value_read);
 
   return resp.value_read;
 }
@@ -253,10 +253,10 @@ static inline void hb_write(void *opaque, int bar_index, hwaddr addr,
     .value_to_write = val,
   };
 
-  static const int WRITE_PAUSE_NS = 1000;
-  static const int WRITE_RETRY_NUM = 100;
+  static const uint64_t WRITE_PAUSE_NS = 1000;
+  static const uint64_t WRITE_RETRY_NUM = 10000;
 
-  HB_INFO(s, "Write to BAR%d, addr 0x%lx\n", bar_index, addr);
+  HB_INFO(s, "Write to BAR%d, addr 0x%lx, reg:0x%lx, val:0x%lx, size:%d\n", bar_index, addr, (addr >> 2), val, size);
   int rc = enqueue(&reg_rw_req_attrs, &req);
   if (rc) {
     HB_ERR(s, "Failed to enqueue reg write request\n");
@@ -268,30 +268,21 @@ static inline void hb_write(void *opaque, int bar_index, hwaddr addr,
   rc = dequeue(&reg_rw_resp_attrs, (uint8_t *)&resp);
   int retries = WRITE_RETRY_NUM;
   while (rc == -EAGAIN && retries > 0) {
-    HB_INFO(s, "Waiting for the reg write response from the model backend.\n");
+    //HB_INFO(s, "Waiting for the reg write response from the model backend.\n");
     sleep_nanoseconds(WRITE_PAUSE_NS);
-    rc = dequeue(&config_resp_attrs, (uint8_t *)&resp);
+    rc = dequeue(&reg_rw_resp_attrs, (uint8_t *)&resp);
     retries--;
   }
 
-  if (rc) {
-    HB_ERR(s, "Failed to dequeue reg read response\n");
-    return;
-  }
+  HB_CHECK(!rc, "Failed to dequeue reg write response\n");
+  HB_CHECK(retries, "Timed out waiting for the reg write response from the model backend.\n");
 
-  if (!retries) {
-    HB_ERR(s, "Timed out waiting for the reg response from the model backend.\n");
-    return;
-  }
+  HB_INFO(s, "Write response retries:%d\n", retries);
+  HB_CHECK(resp.completion.header.seq == req.header.seq,
+    "Write response seq %ld does not match request seq %ld\n", resp.completion.header.seq, req.header.seq);
 
   if (resp.completion.status != HB_CMPL_STATUS_OK) {
-    HB_ERR(s, "Failed to read from BAR%d, addr 0x%lx\n", bar_index, addr);
-    return;
-  }
-
-  if (resp.completion.header.seq != req.header.seq) {
-    HB_ERR(s, "Read response seq %ld does not match request seq %ld\n", resp.completion.header.seq, req.header.seq);
-    return;
+    HB_ERR(s, "Failed to write to BAR%d, addr 0x%lx\n", bar_index, addr);
   }
 }
 
@@ -634,7 +625,10 @@ static int hb_try_exec_dma_ops(const struct HummingbirdState *s) {
           dma_req.dma_handle);
       }
     }
+  } else {
+    rc = 0;
   }
+
   return rc;
 }
 
@@ -648,6 +642,7 @@ static void hb_try_exec_msix_ops(const struct HummingbirdState *s) {
   /* MSIX requested */
   if (msix_enabled(PCI_DEVICE(s))) {
     msix_notify(PCI_DEVICE(s), msix_req.vector_idx);
+    HB_INFO(s, "MSIX vector %d notified\n", msix_req.vector_idx);
   } else {
     HB_ERR(s, "MSIX is not enabled on the device\n");
   }
@@ -987,7 +982,55 @@ static void hb_pci_uninit(PCIDevice *pci_dev) {
   qemu_del_nic(s->nic);
 }
 
-static void hb_qdev_reset(DeviceState *dev) {}
+static void hb_request_qdev_reset(struct HummingbirdState *s) {
+  /* TODO: request to reset the model over config channel. */
+  HB_INFO(s, "Requesting a qdev reset from the model backend.\n");
+  int rc;
+  static uint64_t next_sequence = 1;
+  struct HummingbirdConfigRequest request = {
+    .header = {
+      .seq = next_sequence++,
+    },
+    .opcode = HB_CONFIG_OP_QDEV_RESET,
+  };
+  struct HummingbirdConfigResponse response;
+
+  rc = enqueue(&config_req_attrs, (uint8_t *)&request);
+  if (rc != 0) {
+    HB_ERR(s, "Failed to send qdev reset request to the model backend.\n");
+    return;
+  }
+
+  HB_INFO(s, "Reading the qdev reset response from the model backend.\n");
+  rc = dequeue(&config_resp_attrs, (uint8_t *)&response);
+
+  while (rc == -EAGAIN) {
+    HB_INFO(s, "Waiting for the qdev reset response from the model backend.\n");
+    sleep(1);
+    rc = dequeue(&config_resp_attrs, (uint8_t *)&response);
+  }
+
+  if (rc != 0) {
+    HB_ERR(s, "Failed to read the qdev reset response from the model backend.\n");
+    return;
+  }
+
+  if (response.completion.header.seq != request.header.seq) {
+    HB_ERR(s, "Sequence mismatch, expected:%ld, got:%ld\n",
+      request.header.seq, response.completion.header.seq);
+    return;
+  }
+
+  HB_INFO(s, "Reset qdev from the model backend.\n");
+
+  return;
+}
+
+static void hb_qdev_reset(DeviceState *dev) {
+  struct HummingbirdState *s = HUMMINGBIRD(dev);
+
+  hb_request_qdev_reset(s);
+}
 
 static int hb_pre_save(void *opaque) { return 0; }
 

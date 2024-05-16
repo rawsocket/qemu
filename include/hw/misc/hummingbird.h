@@ -136,6 +136,9 @@ struct HummingbirdCompletion {
 
 struct HummingbirdConfigRequest {
     struct HummingbirdHeader header;
+    uint8_t opcode;
+#define HB_CONFIG_OP_GET_CONFIG 0
+#define HB_CONFIG_OP_QDEV_RESET 1
 } __attribute__((packed));
 
 struct HummingbirdConfigResponse {
@@ -167,6 +170,20 @@ struct HummingbirdConfigResponse {
 
 } __attribute__((packed));
 
+struct HummingbirdUpdateRequest {
+  struct HummingbirdHeader header;
+  uint16_t min_q_id;
+  uint16_t max_q_id;
+  uint8_t opcode;
+#define HB_UPDATE_ENABLE_RECEIVE 0
+#define HB_UPDATE_DISABLE_RECEIVE 1
+#define HB_UPDATE_FLUSH_TX_QUEUES 2
+  uint8_t can_receive;
+} __attribute__((packed));
+
+struct HummingbirdUpdateResponse {
+    struct HummingbirdCompletion completion;
+} __attribute__((packed));
 
 struct HummingbirdRegReadWriteRequest {
     struct HummingbirdHeader header;
